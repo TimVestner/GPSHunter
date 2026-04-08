@@ -85,7 +85,19 @@
             border-radius: 40px;
             font-weight: bold;
         }
+        .clear-btn {
+            background: #d32f2f;
+            color: white;
+            font-size: 0.7rem;
+            padding: 4px 10px;
+            margin-left: 8px;
+        }
         hr { margin: 8px 0; border-color: #555; }
+        .distance {
+            font-size: 0.7rem;
+            opacity: 0.8;
+            margin-left: 4px;
+        }
     </style>
 </head>
 <body>
@@ -94,8 +106,9 @@
     <div class="status">
         <span>📍 GPS: <span id="gpsStatus">Waiting...</span></span>
         <span>🎴 Cards found: <span id="collectedCount">0</span></span>
+        <button id="clearDataBtn" class="clear-btn" title="Testing only: reset all collected cards">🗑️ Clear</button>
     </div>
-    <div>✨ Near you (tap to collect):</div>
+    <div>✨ Near you (within 2km):</div>
     <div class="card-list" id="cardList"></div>
     <hr />
     <div style="font-size:0.7rem; text-align:center;">🔒 Offline ready • Add to Home Screen</div>
@@ -107,14 +120,17 @@
     // 1. Define card locations (lat, lon, name, id)
     // ---------------------------
     const CARDS = [
-        { id: "card_ancient_oak",   lat: 53.716, lng: -1.80, name: "🌳 Ancient Oak" },
-        { id: "card_mystic_well",   lat: 53.717,  lng: -1.80, name: "💧 Mystic Well" },
-        { id: "card_clock_tower",   lat: 51.515, lng: -0.1,  name: "⏰ Clock Tower" },
+        { id: "card_reception_desk",   lat: 53.848543, lng: -1.647242, name: "🌳 Reception Desk" },
+        { id: "card_AS27",   lat: 53.848366, lng: -1.647496, name: "💧 AS27" },
+        { id: "card_library",   lat: 53.849092, lng: -1.646946,  name: "⏰ Library" },
         { id: "card_hidden_garden", lat: 51.508, lng: -0.12, name: "🌸 Hidden Garden" }
     ];
 
     // Collected cards (persist in localStorage)
     let collectedIds = new Set();
+
+    // Current player position (lat, lng)
+    let playerPosition = null;
 
     // Load saved collection
     function loadCollected() {
@@ -131,6 +147,15 @@
     function saveCollected() {
         localStorage.setItem("gpsCardHunter_collected", JSON.stringify([...collectedIds]));
         updateUI();
+    }
+
+    // Clear all data (testing)
+    function clearAllData() {
+        localStorage.removeItem("gpsCardHunter_collected");
+        collectedIds.clear();
+        saveCollected(); // updates UI and markers
+        showToast("🧹 All collected cards cleared (testing only)");
+        updateMapMarkers();
     }
 
     function isCollected(cardId) {
@@ -157,41 +182,6 @@
         }, 2000);
     }
 
-    // Update the UI list of cards & counts
-    function updateUI() {
-        const container = document.getElementById("cardList");
-        const countSpan = document.getElementById("collectedCount");
-        if (!container) return;
-        container.innerHTML = "";
-        let collectedTotal = 0;
-        for (const card of CARDS) {
-            const collected = isCollected(card.id);
-            if (collected) collectedTotal++;
-            const div = document.createElement("div");
-            div.className = "card-item" + (collected ? " collected" : "");
-            div.innerHTML = `${card.name} ${collected ? "✓" : ""}`;
-            if (!collected) {
-                const btn = document.createElement("button");
-                btn.innerText = "📥";
-                btn.style.marginLeft = "6px";
-                btn.onclick = (e) => {
-                    e.stopPropagation();
-                    // manual collect if within range? we'll handle via distance check
-                    if (playerPosition && getDistance(playerPosition.lat, playerPosition.lng, card.lat, card.lng) <= 20) {
-                        collectCard(card.id);
-                        updateUI();
-                        updateMapMarkers();
-                    } else {
-                        showToast("❌ You are too far! Walk closer.");
-                    }
-                };
-                div.appendChild(btn);
-            }
-            container.appendChild(div);
-        }
-        countSpan.innerText = collectedTotal;
-    }
-
     // Helper: distance in meters (Haversine)
     function getDistance(lat1, lon1, lat2, lon2) {
         const R = 6371000;
@@ -204,13 +194,68 @@
         return R * c;
     }
 
+    // Format distance nicely
+    function formatDistance(meters) {
+        if (meters < 1000) return `${Math.round(meters)}m`;
+        return `${(meters / 1000).toFixed(1)}km`;
+    }
+
+    // Update the UI list: only cards within 2km, show distance, allow manual collect if within 20m
+    function updateUI() {
+        const container = document.getElementById("cardList");
+        const countSpan = document.getElementById("collectedCount");
+        if (!container) return;
+        container.innerHTML = "";
+        if (!playerPosition) {
+            container.innerHTML = "<div style='width:100%; text-align:center;'>📍 Waiting for GPS...</div>";
+            countSpan.innerText = collectedIds.size;
+            return;
+        }
+
+        let collectedTotal = 0;
+        // Filter cards within 2000 meters
+        const nearbyCards = CARDS.filter(card => {
+            const dist = getDistance(playerPosition.lat, playerPosition.lng, card.lat, card.lng);
+            return dist <= 2000;
+        });
+
+        if (nearbyCards.length === 0) {
+            container.innerHTML = "<div style='width:100%; text-align:center;'>✨ No cards within 2km. Keep walking!</div>";
+        }
+
+        for (const card of nearbyCards) {
+            const distMeters = getDistance(playerPosition.lat, playerPosition.lng, card.lat, card.lng);
+            const collected = isCollected(card.id);
+            if (collected) collectedTotal++;
+            const div = document.createElement("div");
+            div.className = "card-item" + (collected ? " collected" : "");
+            // Show name + distance
+            div.innerHTML = `${card.name} <span class="distance">(${formatDistance(distMeters)})</span> ${collected ? "✓" : ""}`;
+            if (!collected) {
+                const btn = document.createElement("button");
+                btn.innerText = "📥";
+                btn.style.marginLeft = "6px";
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    if (playerPosition && getDistance(playerPosition.lat, playerPosition.lng, card.lat, card.lng) <= 20) {
+                        collectCard(card.id);
+                        updateUI();
+                        updateMapMarkers();
+                    } else {
+                        showToast(`❌ Too far! Need to be within 20m (currently ${formatDistance(distMeters)})`);
+                    }
+                };
+                div.appendChild(btn);
+            }
+            container.appendChild(div);
+        }
+        countSpan.innerText = collectedIds.size;
+    }
+
     // ---------------------------
     // 2. Map & GPS
     // ---------------------------
     let map, playerMarker, circleMarker;
-    let playerPosition = null; // {lat, lng}
-
-    // Markers for card locations
     let cardMarkers = [];
 
     function initMap() {
@@ -222,7 +267,6 @@
             minZoom: 10
         }).addTo(map);
 
-        // player marker (blue dot)
         playerMarker = L.circleMarker([51.505, -0.09], {
             radius: 8,
             fillColor: "#3388ff",
@@ -231,7 +275,6 @@
             opacity: 1,
             fillOpacity: 0.8
         }).addTo(map);
-        // accuracy circle
         circleMarker = L.circle([51.505, -0.09], {
             radius: 15,
             color: "#3388ff",
@@ -240,47 +283,33 @@
             fillOpacity: 0.1
         }).addTo(map);
 
-        // Add card location markers
         updateMapMarkers();
     }
 
     function updateMapMarkers() {
-        // remove old markers
+        if (!map) return;
         cardMarkers.forEach(m => map.removeLayer(m));
         cardMarkers = [];
         for (const card of CARDS) {
-            if (isCollected(card.id)) {
-                // collected: show greyed out marker or none? we'll show a semi-transparent
-                const marker = L.circleMarker([card.lat, card.lng], {
-                    radius: 10,
-                    color: "#aaa",
-                    weight: 1,
-                    fillColor: "#888",
-                    fillOpacity: 0.4
-                }).addTo(map);
-                marker.bindTooltip(`${card.name} (collected)`, { sticky: true });
-                cardMarkers.push(marker);
-            } else {
-                const marker = L.circleMarker([card.lat, card.lng], {
-                    radius: 12,
-                    color: "#ffb347",
-                    weight: 2,
-                    fillColor: "#ff8c00",
-                    fillOpacity: 0.7
-                }).addTo(map);
-                marker.bindTooltip(`${card.name} 🔍`, { sticky: true });
-                cardMarkers.push(marker);
-            }
+            const collected = isCollected(card.id);
+            const marker = L.circleMarker([card.lat, card.lng], {
+                radius: 10,
+                color: collected ? "#aaa" : "#ffb347",
+                weight: 2,
+                fillColor: collected ? "#888" : "#ff8c00",
+                fillOpacity: collected ? 0.4 : 0.7
+            }).addTo(map);
+            marker.bindTooltip(`${card.name} ${collected ? "(collected)" : "🔍"}`, { sticky: true });
+            cardMarkers.push(marker);
         }
     }
 
-    // Check for nearby cards each time GPS updates
     function checkNearbyCards(lat, lng) {
         let collectedAny = false;
         for (const card of CARDS) {
             if (!isCollected(card.id)) {
                 const dist = getDistance(lat, lng, card.lat, card.lng);
-                if (dist <= 20) { // 20 meters
+                if (dist <= 20) {
                     if (collectCard(card.id)) {
                         collectedAny = true;
                         updateUI();
@@ -307,13 +336,12 @@
         navigator.geolocation.getCurrentPosition(
             (pos) => {
                 statusSpan.innerText = "Active ✅";
-                // start watching
                 if (watchId !== null) navigator.geolocation.clearWatch(watchId);
                 watchId = navigator.geolocation.watchPosition(
                     onPositionUpdate,
                     (err) => {
                         console.warn(err);
-                        statusSpan.innerText = "Error: " + err.message;
+                        statusSpan.innerText = "Error";
                         showToast("GPS error: " + err.message);
                     },
                     {
@@ -337,31 +365,19 @@
         const accuracy = position.coords.accuracy;
         playerPosition = { lat, lng };
 
-        // update markers
         playerMarker.setLatLng([lat, lng]);
         circleMarker.setLatLng([lat, lng]);
         circleMarker.setRadius(accuracy);
-        map.setView([lat, lng], map.getZoom()); // optional: smooth follow
+        // Optional: follow player
+        map.setView([lat, lng], map.getZoom());
 
-        // check for cards
         checkNearbyCards(lat, lng);
+        updateUI();   // refreshes the list with distances and 2km filter
     }
 
     // ---------------------------
-    // 3. Service Worker (offline caching)
+    // 3. Service Worker (offline caching) – inline for demo
     // ---------------------------
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js').then(reg => {
-            console.log('✅ SW registered', reg);
-        }).catch(err => {
-            console.warn('SW registration failed', err);
-        });
-    }
-
-    // But we need to create the sw.js dynamically? For a single-file demo we can create a blob
-    // but simplest: generate sw.js from script. Because we can't serve two files from a single HTML snippet,
-    // we'll inject a service worker using a Blob URL (works for testing). For real deployment, you'd place sw.js alongside.
-    // However, for a complete offline-ready demo, I'll create a Service Worker via code injection.
     function registerInlineServiceWorker() {
         const swCode = `
             const CACHE_NAME = 'gps-card-cache-v1';
@@ -369,8 +385,7 @@
                 '/',
                 '/index.html',
                 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
-                'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
-                'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' // note: can't cache all map tiles, but we cache page shell
+                'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
             ];
             self.addEventListener('install', event => {
                 event.waitUntil(
@@ -385,26 +400,27 @@
         `;
         const blob = new Blob([swCode], {type: 'application/javascript'});
         const swUrl = URL.createObjectURL(blob);
-        navigator.serviceWorker.register(swUrl).then(reg => {
-            console.log("Inline SW registered", reg);
-        }).catch(e => console.warn("SW failed", e));
-        // Note: blob SW scope is limited, but works for demo. For production, serve real sw.js.
+        navigator.serviceWorker.register(swUrl).catch(e => console.warn("SW failed", e));
     }
 
     // ---------------------------
-    // 4. Initialize everything
+    // 4. Initialize
     // ---------------------------
     window.addEventListener('load', () => {
         initMap();
         loadCollected();
         startGPS();
 
-        // Register service worker for offline (inline for demo, but you'd replace with '/sw.js')
         if ('serviceWorker' in navigator) {
             registerInlineServiceWorker();
         }
-        // Refresh markers after UI loads
-        setTimeout(() => updateMapMarkers(), 500);
+
+        // Clear data button
+        document.getElementById("clearDataBtn").addEventListener("click", () => {
+            if (confirm("⚠️ Testing only: This will reset all collected cards. Continue?")) {
+                clearAllData();
+            }
+        });
     });
 </script>
 </body>
